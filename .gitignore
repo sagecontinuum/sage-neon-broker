@@ -1,0 +1,38 @@
+# --- Secrets: passwords for the mirror and the source ------------------------------
+secrets.env
+.env
+.env.*
+!.env.example
+podman/mirror-secrets.yaml
+# Private keys and keystores, if TLS is added later
+*.key
+*.p12
+*.jks
+*.keystore
+
+# --- Python -------------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Jupyter ------------------------------------------------------------------------------
+.ipynb_checkpoints/
+
+# --- Generated bundles and logs -------------------------------------------------------------
+neon_sage_edge.zip
+*.log
+
+# --- Editors and operating systems ---------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db

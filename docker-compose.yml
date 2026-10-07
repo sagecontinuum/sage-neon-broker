@@ -1,0 +1,90 @@
+name: kafka-mirror
+
+services:
+  sage-kafka:
+    build:
+      context: .
+      args:
+        KAFKA_IMAGE: ${KAFKA_IMAGE:-apache/kafka:4.3.1}
+    image: kafka-mirror/kafka-jmx:local
+    hostname: sage-kafka
+    container_name: sage-kafka
+    ports:
+      # SASL/SCRAM clients outside Docker (advertised as MIRROR_ADVERTISED_HOST:MIRROR_EXTERNAL_PORT)
+      - "${MIRROR_EXTERNAL_PORT:-9094}:9094"
+      # Prometheus metrics for the broker
+      - "${MIRROR_METRICS_PORT:-7071}:7071"
+    env_file: secrets.env
+    environment:
+      MIRROR_CLUSTER_ID: "${MIRROR_CLUSTER_ID:-Tmw6-lRzTsCQ4RS7jDkSZA}"
+      MIRROR_ADVERTISED_HOST: "${MIRROR_ADVERTISED_HOST:-localhost}"
+      MIRROR_EXTERNAL_PORT: "${MIRROR_EXTERNAL_PORT:-9094}"
+    volumes:
+      - sage-kafka-data:/var/lib/kafka/data
+      - ./sage-kafka.properties:/etc/kafka/mirror/server.properties:ro
+      - ./jmx-sage-kafka.yml:/etc/kafka/mirror/jmx-exporter.yml:ro
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        # First start only: format the storage and create the "mm2" SCRAM user.
+        # --ignore-formatted turns this into a no-op once the volume is formatted.
+        /opt/kafka/bin/kafka-storage.sh format --ignore-formatted \
+          --cluster-id "$$MIRROR_CLUSTER_ID" \
+          --config /etc/kafka/mirror/server.properties \
+          --add-scram "SCRAM-SHA-512=[name=mm2,password=$$MIRROR_MM2_PASSWORD]"
+        # Attach the Prometheus exporter to the broker JVM only. It's exported here
+        # rather than in "environment:", so CLI tools run with "docker compose exec"
+        # don't also try to start an exporter on the same port.
+        export KAFKA_OPTS="-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=7071:/etc/kafka/mirror/jmx-exporter.yml"
+        exec /opt/kafka/bin/kafka-server-start.sh /etc/kafka/mirror/server.properties \
+          --override "advertised.listeners=INTERNAL://sage-kafka:9092,EXTERNAL://$$MIRROR_ADVERTISED_HOST:$$MIRROR_EXTERNAL_PORT,LOCAL://127.0.0.1:9095"
+    healthcheck:
+      # Uses the loopback-only LOCAL listener, so it needs no credentials.
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server 127.0.0.1:9095 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 20s
+      retries: 12
+      start_period: 30s
+    restart: always
+
+  mirrormaker:
+    build:
+      context: .
+      args:
+        KAFKA_IMAGE: ${KAFKA_IMAGE:-apache/kafka:4.3.1}
+    image: kafka-mirror/kafka-jmx:local
+    container_name: mirrormaker
+    depends_on:
+      sage-kafka:
+        condition: service_healthy
+    ports:
+      - "${MM2_METRICS_PORT:-7072}:7072"
+    env_file: secrets.env
+    environment:
+      - KAFKA_HEAP_OPTS
+    volumes:
+      - ./mm2.properties:/etc/mm2/mm2.properties:ro
+      - ./jmx-mirrormaker.yml:/etc/mm2/jmx-exporter.yml:ro
+    command:
+      - bash
+      - -c
+      - |
+        until getent hosts sage-kafka > /dev/null; do
+          echo "Waiting for sage-kafka to resolve..."
+          sleep 2
+        done
+        export KAFKA_OPTS="-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=7072:/etc/mm2/jmx-exporter.yml"
+        exec /opt/kafka/bin/connect-mirror-maker.sh /etc/mm2/mm2.properties --clusters mirror
+    extra_hosts:
+      # Lets MM2 reach a source running on the Docker host as host.docker.internal
+      - "host.docker.internal:host-gateway"
+    restart: always
+
+volumes:
+  sage-kafka-data:
+
+networks:
+  default:
+    name: kafka-mirror
