@@ -1,0 +1,165 @@
+# =============================================================================
+# Prometheus JMX exporter rules for the mirror broker (sage-kafka container).
+# Metrics are served at http://<docker-host>:7071/metrics
+#
+# Adapted from the jmx_exporter project's Kafka KRaft example
+# (examples/kafka-kraft-3_0_0.yml) with two changes: the per-user rules come
+# first, and the "type-only" KRaft rules match only beans whose sole property
+# is "type", so they can't swallow the per-user quota metrics.
+# =============================================================================
+lowercaseOutputName: true
+
+rules:
+  # --- Per-user usage --------------------------------------------------------
+  # These only exist once a client quota is configured (README, "Per-user
+  # metrics"). With a default *user* quota, beans are keyed by user alone,
+  # e.g. kafka.server:type=Produce,user=alice
+  - pattern: 'kafka.server<type=(Produce|Fetch), user=([^,]+)><>byte-rate'
+    name: kafka_user_bytes_per_second
+    type: GAUGE
+    labels:
+      request: "$1"
+      user: "$2"
+  - pattern: 'kafka.server<type=(Produce|Fetch), user=([^,]+)><>throttle-time'
+    name: kafka_user_throttle_time_ms
+    type: GAUGE
+    labels:
+      request: "$1"
+      user: "$2"
+
+  # Other quota shapes: request-time quotas per user, and client-id or
+  # user + client-id quotas if you ever configure those.
+  - pattern: 'kafka.server<type=([^,]+), user=([^,]+), client-id=([^,]+)><>([a-z-]+)'
+    name: kafka_server_quota_$4
+    type: GAUGE
+    labels:
+      resource: "$1"
+      user: "$2"
+      client_id: "$3"
+  - pattern: 'kafka.server<type=([^,]+), client-id=([^,]+)><>([a-z-]+)'
+    name: kafka_server_quota_$3
+    type: GAUGE
+    labels:
+      resource: "$1"
+      client_id: "$2"
+  - pattern: 'kafka.server<type=([^,]+), user=([^,]+)><>([a-z-]+)'
+    name: kafka_server_quota_$3
+    type: GAUGE
+    labels:
+      resource: "$1"
+      user: "$2"
+
+  # --- Special cases (from the jmx_exporter example) --------------------------
+  - pattern: 'kafka.server<type=(.+), name=(.+), clientId=(.+), topic=(.+), partition=(.*)><>Value'
+    name: kafka_server_$1_$2
+    type: GAUGE
+    labels:
+      clientId: "$3"
+      topic: "$4"
+      partition: "$5"
+  - pattern: 'kafka.server<type=(.+), name=(.+), clientId=(.+), brokerHost=(.+), brokerPort=(.+)><>Value'
+    name: kafka_server_$1_$2
+    type: GAUGE
+    labels:
+      clientId: "$3"
+      broker: "$4:$5"
+  - pattern: 'kafka.coordinator.(\w+)<type=(.+), name=(.+)><>Value'
+    name: kafka_coordinator_$1_$2_$3
+    type: GAUGE
+
+  # --- KRaft ------------------------------------------------------------------
+  - pattern: 'kafka.server<type=raft-metrics><>current-state: ([a-z]+)'
+    name: kafka_server_raft_metrics_current_state
+    type: GAUGE
+    value: 1
+    labels:
+      state: "$1"
+  - pattern: 'kafka.server<type=([^,]+)><>([a-z-]+)-total'
+    name: kafka_server_$1_$2_total
+    type: COUNTER
+  - pattern: 'kafka.server<type=([^,]+)><>([a-z-]+)'
+    name: kafka_server_$1_$2
+    type: GAUGE
+
+  # --- Generic per-second counters with 0-2 key/value pairs --------------------
+  # e.g. kafka.server:type=BrokerTopicMetrics,name=BytesInPerSec,topic=orders
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+)PerSec\w*, (.+)=(.+), (.+)=(.+)><>Count'
+    name: kafka_$1_$2_$3_total
+    type: COUNTER
+    labels:
+      "$4": "$5"
+      "$6": "$7"
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+)PerSec\w*, (.+)=(.+)><>Count'
+    name: kafka_$1_$2_$3_total
+    type: COUNTER
+    labels:
+      "$4": "$5"
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+)PerSec\w*><>Count'
+    name: kafka_$1_$2_$3_total
+    type: COUNTER
+
+  # --- Percentages (before the generic gauges, so they win) ----------------------
+  # e.g. kafka.server:type=KafkaRequestHandlerPool,name=RequestHandlerAvgIdlePercent
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+)Percent\w*><>MeanRate'
+    name: kafka_$1_$2_$3_percent
+    type: GAUGE
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+)Percent\w*><>Value'
+    name: kafka_$1_$2_$3_percent
+    type: GAUGE
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+)Percent\w*, (.+)=(.+)><>Value'
+    name: kafka_$1_$2_$3_percent
+    type: GAUGE
+    labels:
+      "$4": "$5"
+
+  # --- Generic gauges with 0-2 key/value pairs ---------------------------------
+  # e.g. kafka.server:type=ReplicaManager,name=UnderReplicatedPartitions
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+), (.+)=(.+), (.+)=(.+)><>Value'
+    name: kafka_$1_$2_$3
+    type: GAUGE
+    labels:
+      "$4": "$5"
+      "$6": "$7"
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+), (.+)=(.+)><>Value'
+    name: kafka_$1_$2_$3
+    type: GAUGE
+    labels:
+      "$4": "$5"
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+)><>Value'
+    name: kafka_$1_$2_$3
+    type: GAUGE
+
+  # --- Histograms, exported as count + percentiles ------------------------------
+  # e.g. kafka.network:type=RequestMetrics,name=TotalTimeMs,request=Produce
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+), (.+)=(.+), (.+)=(.+)><>Count'
+    name: kafka_$1_$2_$3_count
+    type: COUNTER
+    labels:
+      "$4": "$5"
+      "$6": "$7"
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+), (.+)=(.*), (.+)=(.+)><>(\d+)thPercentile'
+    name: kafka_$1_$2_$3
+    type: GAUGE
+    labels:
+      "$4": "$5"
+      "$6": "$7"
+      quantile: "0.$8"
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+), (.+)=(.+)><>Count'
+    name: kafka_$1_$2_$3_count
+    type: COUNTER
+    labels:
+      "$4": "$5"
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+), (.+)=(.*)><>(\d+)thPercentile'
+    name: kafka_$1_$2_$3
+    type: GAUGE
+    labels:
+      "$4": "$5"
+      quantile: "0.$6"
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+)><>Count'
+    name: kafka_$1_$2_$3_count
+    type: COUNTER
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+)><>(\d+)thPercentile'
+    name: kafka_$1_$2_$3
+    type: GAUGE
+    labels:
+      quantile: "0.$4"

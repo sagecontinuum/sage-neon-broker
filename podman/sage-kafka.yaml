@@ -1,0 +1,130 @@
+# =============================================================================
+# sage-kafka and MirrorMaker 2 as one Podman pod, for hosts where Podman can't
+# resolve container names. Containers in a pod share one network, so they talk
+# over localhost and need no DNS.
+#
+# Keep this file next to sage-kafka.properties, mm2.properties and the two jmx-*.yml
+# files, and run these from that folder (the hostPath entries are relative to it):
+#   podman build -t localhost/kafka-mirror/kafka-jmx:local .
+#   podman kube play sage-kafka-pvc.yaml        (once: creates the data volume)
+#   podman kube play --configmap mirror-secrets.yaml kafka-mirror-pod.yaml
+#
+# Apply changes:   podman kube play --replace --configmap mirror-secrets.yaml kafka-mirror-pod.yaml
+# Stop (the data volume is separate and stays):   podman kube down kafka-mirror-pod.yaml
+# (Podman 3.x spells these "podman play kube" and "podman play kube --down".)
+# =============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kafka-mirror
+spec:
+  restartPolicy: Always
+  containers:
+    # --- The mirror broker ----------------------------------------------------
+    - name: sage-kafka
+      image: localhost/kafka-mirror/kafka-jmx:local
+      imagePullPolicy: IfNotPresent
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          # First start only: format the storage and create the "mm2" SCRAM user.
+          # KAFKA_OPTS is cleared for this one command so it doesn't start an exporter too.
+          KAFKA_OPTS= /opt/kafka/bin/kafka-storage.sh format --ignore-formatted \
+            --cluster-id "$MIRROR_CLUSTER_ID" \
+            --config /etc/kafka/mirror/server.properties \
+            --add-scram "SCRAM-SHA-512=[name=mm2,password=$MIRROR_MM2_PASSWORD]"
+          # INTERNAL is advertised as localhost: MirrorMaker shares this pod's network.
+          exec /opt/kafka/bin/kafka-server-start.sh /etc/kafka/mirror/server.properties \
+            --override "advertised.listeners=INTERNAL://localhost:9092,EXTERNAL://$MIRROR_ADVERTISED_HOST:$MIRROR_EXTERNAL_PORT,LOCAL://127.0.0.1:9095"
+      env:
+        # Attaches the Prometheus exporter. Because it's in the container's environment,
+        # Kafka tools you start with "podman exec" inherit it and would try to open a
+        # second exporter on the same port, so clear it for those commands:
+        #   podman exec -e KAFKA_OPTS= kafka-mirror-sage-kafka /opt/kafka/bin/kafka-topics.sh ...
+        - name: KAFKA_OPTS
+          value: "-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=7071:/etc/kafka/mirror/jmx-exporter.yml"
+        - name: MIRROR_CLUSTER_ID
+          value: "Tmw6-lRzTsCQ4RS7jDkSZA"
+        # Hostname or IP that clients outside the pod use to reach the broker.
+        - name: MIRROR_ADVERTISED_HOST
+          value: "localhost"
+        - name: MIRROR_EXTERNAL_PORT
+          value: "9094"
+      envFrom:
+        - configMapRef:
+            name: mirror-secrets
+      ports:
+        - containerPort: 9094   # SASL/SCRAM clients outside the pod
+          hostPort: 9094
+        - containerPort: 7071   # Prometheus metrics for the broker
+          hostPort: 7071
+      volumeMounts:
+        - name: sage-kafka-data
+          mountPath: /var/lib/kafka/data
+        - name: broker-config
+          mountPath: /etc/kafka/mirror/server.properties
+          readOnly: true
+        - name: broker-jmx-rules
+          mountPath: /etc/kafka/mirror/jmx-exporter.yml
+          readOnly: true
+
+    # --- MirrorMaker 2 ------------------------------------------------------------
+    - name: mirrormaker
+      image: localhost/kafka-mirror/kafka-jmx:local
+      imagePullPolicy: IfNotPresent
+      command: ["bash", "-c"]
+      args:
+        - |
+          # A pod has no depends_on, so wait until the broker accepts connections.
+          until (exec 3<>/dev/tcp/127.0.0.1/9092) 2>/dev/null; do
+            echo "Waiting for sage-kafka on localhost:9092..."
+            sleep 2
+          done
+          exec /opt/kafka/bin/connect-mirror-maker.sh /etc/mm2/mm2.properties --clusters mirror
+      env:
+        - name: KAFKA_OPTS
+          value: "-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=7072:/etc/mm2/jmx-exporter.yml"
+        - name: KAFKA_HEAP_OPTS
+          value: "-Xms512m -Xmx1g"
+        # If mm2.properties reads the source address from the environment:
+        # - name: SOURCE_HOST
+        #   value: "10.0.0.5"
+        # - name: SOURCE_PORT
+        #   value: "9092"
+      envFrom:
+        - configMapRef:
+            name: mirror-secrets
+      ports:
+        - containerPort: 7072   # Prometheus metrics for MirrorMaker
+          hostPort: 7072
+      volumeMounts:
+        - name: mm2-config
+          mountPath: /etc/mm2/mm2.properties
+          readOnly: true
+        - name: mm2-jmx-rules
+          mountPath: /etc/mm2/jmx-exporter.yml
+          readOnly: true
+
+  volumes:
+    - name: sage-kafka-data
+      persistentVolumeClaim:
+        # The volume from sage-kafka-pvc.yaml. To keep the data from the Compose setup,
+        # put that volume's name here instead (podman volume ls, e.g. kafka-mirror_sage-kafka-data).
+        claimName: sage-kafka-data
+    - name: broker-config
+      hostPath:
+        path: ../sage-kafka.properties
+        type: File
+    - name: broker-jmx-rules
+      hostPath:
+        path: ../jmx-sage-kafka.yml
+        type: File
+    - name: mm2-config
+      hostPath:
+        path: ../mm2.properties
+        type: File
+    - name: mm2-jmx-rules
+      hostPath:
+        path: ../jmx-mirrormaker.yml
+        type: File

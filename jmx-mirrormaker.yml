@@ -1,0 +1,56 @@
+# =============================================================================
+# Prometheus JMX exporter rules for MirrorMaker 2 (mirrormaker container).
+# Metrics are served at http://<docker-host>:7072/metrics
+#
+# MM2 in Kafka 4.x emits its "legacy" metric names by default (the
+# metric.names.formats setting); these rules match that format.
+# =============================================================================
+lowercaseOutputName: true
+
+rules:
+  # Per mirrored partition: replication-latency-ms, record-age-ms, record-count,
+  # record-rate, byte-count, byte-rate (plus -min/-max/-avg variants).
+  - pattern: 'kafka.connect.mirror<type=MirrorSourceConnector, source=([^,]+), target=([^,]+), topic=([^,]+), partition=([0-9]+)><>([a-z-]+)'
+    name: kafka_mirror_source_$5
+    type: GAUGE
+    labels:
+      source: "$1"
+      target: "$2"
+      topic: "$3"
+      partition: "$4"
+
+  # Per consumer group and partition: checkpoint-latency-ms (plus -min/-max/-avg).
+  - pattern: 'kafka.connect.mirror<type=MirrorCheckpointConnector, source=([^,]+), target=([^,]+), group=([^,]+), topic=([^,]+), partition=([0-9]+)><>([a-z-]+)'
+    name: kafka_mirror_checkpoint_$6
+    type: GAUGE
+    labels:
+      source: "$1"
+      target: "$2"
+      group: "$3"
+      topic: "$4"
+      partition: "$5"
+
+  # How far MM2's consumers are behind the source, and how fast they read.
+  - pattern: 'kafka.consumer<type=consumer-fetch-manager-metrics, client-id=([^,]+)><>(records-lag-max|records-consumed-rate|bytes-consumed-rate)'
+    name: kafka_mirror_consumer_$2
+    type: GAUGE
+    labels:
+      client_id: "$1"
+
+  # Connector and task health: value 1, with the state in the "status" label
+  # (running, paused, failed, ...). Alert on status="failed".
+  - pattern: 'kafka.connect<type=connector-metrics, connector=([^,]+)><>status: ([a-z-]+)'
+    name: kafka_mirror_connector_status
+    type: GAUGE
+    value: 1
+    labels:
+      connector: "$1"
+      status: "$2"
+  - pattern: 'kafka.connect<type=connector-task-metrics, connector=([^,]+), task=([0-9]+)><>status: ([a-z-]+)'
+    name: kafka_mirror_task_status
+    type: GAUGE
+    value: 1
+    labels:
+      connector: "$1"
+      task: "$2"
+      status: "$3"
