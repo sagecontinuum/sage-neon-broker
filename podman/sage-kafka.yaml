@@ -24,19 +24,7 @@ spec:
     - name: sage-kafka
       image: localhost/kafka-mirror/kafka-jmx:local
       imagePullPolicy: IfNotPresent
-      command: ["bash", "-c"]
-      args:
-        - |
-          set -e
-          # First start only: format the storage and create the "mm2" SCRAM user.
-          # KAFKA_OPTS is cleared for this one command so it doesn't start an exporter too.
-          KAFKA_OPTS= /opt/kafka/bin/kafka-storage.sh format --ignore-formatted \
-            --cluster-id "$MIRROR_CLUSTER_ID" \
-            --config /etc/kafka/mirror/server.properties \
-            --add-scram "SCRAM-SHA-512=[name=mm2,password=$MIRROR_MM2_PASSWORD]"
-          # INTERNAL is advertised as localhost: MirrorMaker shares this pod's network.
-          exec /opt/kafka/bin/kafka-server-start.sh /etc/kafka/mirror/server.properties \
-            --override "advertised.listeners=INTERNAL://localhost:9092,EXTERNAL://$MIRROR_ADVERTISED_HOST:$MIRROR_EXTERNAL_PORT,LOCAL://127.0.0.1:9095"
+      command: ["bash", "/etc/kafka/mirror/start.sh"]
       env:
         # Attaches the Prometheus exporter. Because it's in the container's environment,
         # Kafka tools you start with "podman exec" inherit it and would try to open a
@@ -68,6 +56,12 @@ spec:
         - name: broker-jmx-rules
           mountPath: /etc/kafka/mirror/jmx-exporter.yml
           readOnly: true
+        - name: acl-rules
+          mountPath: /etc/kafka/mirror/acls.conf
+          readOnly: true
+        - name: broker-start-script
+          mountPath: /etc/kafka/mirror/start.sh
+          readOnly: true
 
     # --- MirrorMaker 2 ------------------------------------------------------------
     - name: mirrormaker
@@ -87,11 +81,6 @@ spec:
           value: "-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=7072:/etc/mm2/jmx-exporter.yml"
         - name: KAFKA_HEAP_OPTS
           value: "-Xms512m -Xmx1g"
-        # If mm2.properties reads the source address from the environment:
-        # - name: SOURCE_HOST
-        #   value: "10.0.0.5"
-        # - name: SOURCE_PORT
-        #   value: "9092"
       envFrom:
         - configMapRef:
             name: mirror-secrets
@@ -127,4 +116,12 @@ spec:
     - name: mm2-jmx-rules
       hostPath:
         path: ../jmx-mirrormaker.yml
+        type: File
+    - name: acl-rules
+      hostPath:
+        path: ../kafka-acls.conf
+        type: File
+    - name: broker-start-script
+      hostPath:
+        path: ../sage-kafka-start.sh
         type: File
