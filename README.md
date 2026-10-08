@@ -52,6 +52,7 @@ docker compose logs -f mirrormaker
 podman build -t localhost/kafka-mirror/kafka-jmx:local .
 podman kube play podman/sage-kafka-pvc.yaml
 podman kube play --configmap mirror-secrets.yaml sage-kafka.yaml
+podman kube play --replace --configmap mirror-secrets.yaml sage-kafka.yaml
 ```
 
 MM2 can take a minute or two after startup before records start flowing. On the first run it copies everything the source still retains for 
@@ -126,6 +127,36 @@ settings like these, passed to the Kafka CLI tools with `--command-config client
 security.protocol=SASL_PLAINTEXT
 sasl.mechanism=SCRAM-SHA-512
 sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="sage" password="sagepass";
+```
+
+The Kafka mirror has an `authorizer` set and all newly created users only have READ-only access.
+
+To confirm that READ-only access is working:
+```bash
+podman exec -i kafka-mirror-sage-kafka sh -c 'cat > /tmp/notebook.properties' <<'EOF'
+security.protocol=SASL_PLAINTEXT
+sasl.mechanism=SCRAM-SHA-512
+sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="sage" password="sagepass";
+EOF
+
+podman exec -e KAFKA_OPTS= kafka-mirror-sage-kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 --command-config /tmp/notebook.properties \
+  --create --topic reading.notebook-made --partitions 1 --replication-factor 1
+```
+This should return the following:
+```bash
+Error while executing topic command : Authorization failed.
+[2026-10-08 21:06:32,760] ERROR org.apache.kafka.common.errors.TopicAuthorizationException: Authorization failed.
+ (org.apache.kafka.tools.TopicCommand)
+```
+Note that users is not allowed to write to an existing topic.
+
+To allow a user permissions to write to a new topic called `my-app-output`, here is an example:
+```bash
+podman exec -e KAFKA_OPTS= kafka-mirror-sage-kafka /opt/kafka/bin/kafka-acls.sh \
+  --bootstrap-server 127.0.0.1:9095" --add --allow-principal User:sage \
+  --operation Write --operation Describe --topic my-app-output
+
 ```
 
 ## Metrics
