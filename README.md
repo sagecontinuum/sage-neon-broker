@@ -69,15 +69,16 @@ Admin commands run inside the broker container use the loopback-only `LOCAL` lis
 docker compose exec sage-kafka /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server 127.0.0.1:9095 --list
 
-podman exec -e KAFKA_OPTS= kafka-mirror-sage-kafka \
-  /opt/kafka/bin/kafka-topics.sh   --bootstrap-server 127.0.0.1:9095 --list
+podman exec -e KAFKA_OPTS= kafka-mirror-sage-kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server 127.0.0.1:9095 --command-config /tmp/admin.properties --list
 
 # Read a few records from a mirrored topic
 docker compose exec sage-kafka /opt/kafka/bin/kafka-console-consumer.sh \
   --bootstrap-server 127.0.0.1:9095 --topic orders --max-messages 5
 
 podman exec -e KAFKA_OPTS= kafka-mirror-sage-kafka /opt/kafka/bin/kafka-console-consumer.sh \
-  --bootstrap-server 127.0.0.1:9095 --topic reading.sensor.csat3b --max-messages 5
+  --bootstrap-server 127.0.0.1:9095 --command-config /tmp/admin.properties \
+  --topic reading.sensor.csat3b --max-messages 5
 
 ```
 
@@ -85,16 +86,19 @@ Offsets on the mirror won't equal the source's, so compare record counts per par
 
 ## Exploring the mirror in a notebook
 
-`mirror-explorer.ipynb` connects to the mirror's external port as its own user and lets you list topics, look at the latest messages (with JSON values split into columns), see what arrived recently, and watch new records arrive.
+`mirror-explorer.ipynb` now lives in its seperate repository with the neon_sage_edge client: [notebook](https://github.com/sagecontinuum/neon_sage_edge/blob/main/notebooks/mirror-explorer.ipynb)
 
 ## Users and authentication
 
-The broker has four listeners. `INTERNAL` (port 9092, for containers on the Compose network, which is what MM2 uses) 
-and `EXTERNAL` (port 9094, published for everything outside Docker) both require SASL/SCRAM-SHA-512. `LOCAL` (127.0.0.1:9095) 
-and `CONTROLLER` (127.0.0.1:9093) require nothing, but they only listen on the container's loopback interface, so only processes
-inside the container can use them. That's what makes the password-free admin commands above work.
+The broker has four listeners. 
 
-Users live in the cluster's metadata, so you add and remove them without restarting anything:
+- `INTERNAL` (port 9092, for containers on the Compose network, which is what MM2 uses and the admin account) and uses SASL/SCRAM-SHA-512. 
+- `EXTERNAL` (port 9094, published for everything outside Docker) does not require usernames/passwords and are all monitor in the username ANONYMOUS when looking at the grafana dashboard.
+- `LOCAL` (127.0.0.1:9095) and `CONTROLLER` (127.0.0.1:9093) only accessible to the admin and inter-broker traffic, but they only listen on the container's loopback interface, so only processes
+inside the container can use them. 
+
+The Kafka mirror has the `EXTERNAL` port open to anyone to use, but this is kept just in case we
+decide to add back SASL/SCRAM-SHA-512 in the future:
 
 ```bash
 # Add a user (or reset its password)
@@ -102,22 +106,24 @@ docker compose exec sage-kafka /opt/kafka/bin/kafka-configs.sh --bootstrap-serve
   --alter --entity-type users --entity-name sage --add-config 'SCRAM-SHA-512=[password=sagepass]'
 
 podman exec -e KAFKA_OPTS= kafka-mirror-sage-kafka /opt/kafka/bin/kafka-configs.sh \
-  --bootstrap-server 127.0.0.1:9095 --alter --entity-type users --entity-name sage --add-config 'SCRAM-SHA-512=[password=sagepass]'
+  --bootstrap-server 127.0.0.1:9095 --command-config /tmp/admin.properties --alter \
+  --entity-type users --entity-name sage --add-config 'SCRAM-SHA-512=[password=sagepass]'
 
 # List users
 docker compose exec sage-kafka /opt/kafka/bin/kafka-configs.sh --bootstrap-server 127.0.0.1:9095 \
   --describe --entity-type users
 
 podman exec -e KAFKA_OPTS= kafka-mirror-sage-kafka /opt/kafka/bin/kafka-configs.sh \
-  --bootstrap-server 127.0.0.1:9095 --describe --entity-type users
+  --bootstrap-server 127.0.0.1:9095 --command-config /tmp/admin.properties \
+   --describe --entity-type users
 
 # Remove a user's password, so it can no longer log in
 docker compose exec sage-kafka /opt/kafka/bin/kafka-configs.sh --bootstrap-server 127.0.0.1:9095 \
   --alter --entity-type users --entity-name sage --delete-config 'SCRAM-SHA-512'
 
 podman exec -e KAFKA_OPTS= kafka-mirror-sage-kafka /opt/kafka/bin/kafka-configs.sh \
-  --bootstrap-server 127.0.0.1:9095 --alter --entity-type users --entity-name sage \
-  --delete-config 'SCRAM-SHA-512'
+  --bootstrap-server 127.0.0.1:9095 --alter --command-config /tmp/admin.properties \
+  --entity-type users --entity-name sage --delete-config 'SCRAM-SHA-512'
 ```
 
 Clients outside Docker connect to `localhost:9094` (or `MIRROR_ADVERTISED_HOST:MIRROR_EXTERNAL_PORT`) with 
@@ -184,9 +190,8 @@ docker compose exec sage-kafka /opt/kafka/bin/kafka-configs.sh --bootstrap-serve
   --alter --entity-type users --entity-default \
   --add-config 'producer_byte_rate=1073741824,consumer_byte_rate=1073741824'
 
-podman exec -e KAFKA_OPTS= kafka-mirror-sage-kafka /opt/kafka/bin/kafka-configs.sh --bootstrap-server 127.0.0.1:9095 \
-  --alter --entity-type users --entity-default \
-  --add-config 'producer_byte_rate=1073741824,consumer_byte_rate=1073741824'
+podman exec -e KAFKA_OPTS= kafka-mirror-sage-kafka /opt/kafka/bin/kafka-configs.sh \
+  --bootstrap-server 127.0.0.1:9095 --command-config /tmp/admin.properties --alter --entity-type users --entity-default --add-config 'producer_byte_rate=1073741824,consumer_byte_rate=1073741824'
 ```
 
 From then on the broker exports `kafka_user_bytes_per_second{request="Produce|Fetch", user="..."}` and `kafka_user_throttle_time_ms` for every user that's active. MM2 shows up as `user="mm2"`, and the password-free admin tools as `user="ANONYMOUS"`. The rate covers roughly the last ten seconds, so for usage over time let Prometheus integrate it; for example, approximate bytes each user produced over the last hour:
@@ -224,7 +229,7 @@ sasl.mechanism=SCRAM-SHA-512
 sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="sage" password="sagepass";
 EOF'
 
-# About 2 MB/s as alice for 30 seconds, through the authenticated INTERNAL listener
+# About 2 MB/s as sage for 30 seconds, through the authenticated INTERNAL listener
 docker compose exec sage-kafka /opt/kafka/bin/kafka-producer-perf-test.sh \
   --bootstrap-server sage-kafka:9092 --command-config /tmp/sage.properties \
   --topic sage-demo --num-records 300000 --record-size 200 --throughput 10000
