@@ -4,6 +4,7 @@ secrets.env
 .env.*
 !.env.example
 podman/mirror-secrets.yaml
+k8s/mirror-secrets.yaml
 # Private keys and keystores, if TLS is added later
 *.key
 *.p12

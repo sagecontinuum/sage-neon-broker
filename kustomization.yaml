@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - k8s/sage-kafka.yaml
+
+configMapGenerator:
+  - name: sage-kafka-config
+    files:
+      - server.properties=sage-kafka.properties
+      - jmx-exporter.yml=jmx-sage-kafka.yml
+      - acls.conf=kafka-acls.conf
+      - start.sh=sage-kafka-start.sh
+  - name: mm2-config
+    files:
+      - mm2.properties
+      - jmx-exporter.yml=jmx-mirrormaker.yml
+
+images:
+  - name: local/kafka-jmx
+    newName: 10.31.81.1:5000/local/kafka-jmx
+    newTag: "latest"

@@ -98,8 +98,7 @@ spec:
   volumes:
     - name: sage-kafka-data
       persistentVolumeClaim:
-        # The volume from sage-kafka-pvc.yaml. To keep the data from the Compose setup,
-        # put that volume's name here instead (podman volume ls, e.g. kafka-mirror_sage-kafka-data).
+        # The volume from sage-kafka-pvc.yaml.
         claimName: sage-kafka-data
     - name: broker-config
       hostPath:

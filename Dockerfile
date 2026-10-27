@@ -1,6 +1,6 @@
 # apache/kafka plus the Prometheus JMX exporter Java agent.
-# Docker Compose builds this automatically ("docker compose up -d --build").
-# Both the mirror-kafka and mirrormaker containers run this image.
+# Build it with:  podman build -t localhost/kafka-mirror/kafka-jmx:local .
+# Both the sage-kafka and mirrormaker containers run this image.
 
 ARG KAFKA_IMAGE=apache/kafka:4.3.1
 FROM ${KAFKA_IMAGE}

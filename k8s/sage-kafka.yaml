@@ -1,0 +1,121 @@
+# =============================================================================
+# sage-kafka and MirrorMaker 2 on Kubernetes
+# kustomization.yaml in the repo root turns sage-kafka.properties, mm2.properties,
+# kafka-acls.conf, sage-kafka-start.sh and the two jmx-*.yml files into ConfigMaps
+# Apply changes:   kubectl apply -k .   (a changed config file restarts the pod)
+# After changing only k8s/mirror-secrets.yaml, apply it and then:
+#   kubectl rollout restart statefulset/kafka-mirror
+# Stop (the data volume is separate and stays):   kubectl delete -k .
+# =============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka-mirror
+spec:
+  serviceName: kafka-mirror
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-mirror
+  template:
+    metadata:
+      labels:
+        app: kafka-mirror
+    spec:
+      containers:
+        # --- The mirror broker ----------------------------------------------------
+        - name: sage-kafka
+          image: 10.31.81.1:5000/local/kafka-jmx:latest
+          imagePullPolicy: Always
+          command: ["bash", "/etc/kafka/mirror/start.sh"]
+          env:
+            - name: KAFKA_OPTS
+              value: "-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=7071:/etc/kafka/mirror/jmx-exporter.yml"
+            - name: MIRROR_CLUSTER_ID
+              value: "Tmw6-lRzTsCQ4RS7jDkSZA"
+            - name: MIRROR_ADVERTISED_HOST
+              value: "localhost"
+            - name: MIRROR_EXTERNAL_PORT
+              value: "9094"
+          envFrom:
+            - secretRef:
+                name: mirror-secrets
+          ports:
+            - name: kafka
+              containerPort: 9094
+            - name: broker-metrics
+              containerPort: 7071
+          readinessProbe:
+            tcpSocket:
+              port: 9094
+            periodSeconds: 10
+          volumeMounts:
+            - name: sage-kafka-data
+              mountPath: /var/lib/kafka/data
+            - name: broker-config
+              mountPath: /etc/kafka/mirror
+              readOnly: true
+
+        # --- MirrorMaker 2 ------------------------------------------------------------
+        - name: mirrormaker
+          image: 10.31.81.1:5000/local/kafka-jmx:latest
+          imagePullPolicy: Always
+          command: ["bash", "-c"]
+          args:
+            - |
+              # A pod has no depends_on, so wait until the broker accepts connections.
+              until (exec 3<>/dev/tcp/127.0.0.1/9092) 2>/dev/null; do
+                echo "Waiting for sage-kafka on localhost:9092..."
+                sleep 2
+              done
+              exec /opt/kafka/bin/connect-mirror-maker.sh /etc/mm2/mm2.properties --clusters mirror
+          env:
+            - name: KAFKA_OPTS
+              value: "-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=7072:/etc/mm2/jmx-exporter.yml"
+            - name: KAFKA_HEAP_OPTS
+              value: "-Xms512m -Xmx1g"
+          envFrom:
+            - secretRef:
+                name: mirror-secrets
+          ports:
+            - name: mm2-metrics
+              containerPort: 7072
+          volumeMounts:
+            - name: mm2-config
+              mountPath: /etc/mm2
+              readOnly: true
+
+      volumes:
+        - name: broker-config
+          configMap:
+            name: sage-kafka-config
+        - name: mm2-config
+          configMap:
+            name: mm2-config
+  volumeClaimTemplates:
+    - metadata:
+        name: sage-kafka-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 200Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-mirror
+spec:
+  type: ClusterIP
+  selector:
+    app: kafka-mirror
+  ports:
+    - name: kafka
+      port: 9094
+      targetPort: 9094
+    - name: broker-metrics
+      port: 7071
+      targetPort: 7071
+    - name: mm2-metrics
+      port: 7072
+      targetPort: 7072
