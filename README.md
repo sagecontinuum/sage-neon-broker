@@ -49,8 +49,9 @@ because MM2 copies per-topic settings but not the source broker's defaults.
 #Podman (Sage Thor)
 podman build -t localhost/kafka-mirror/kafka-jmx:local .
 podman kube play podman/sage-kafka-pvc.yaml
-podman kube play --configmap podman/mirror-secrets.yaml podman/sage-kafka.yaml
-podman kube play --replace --configmap podman/mirror-secrets.yaml podman/sage-kafka.yaml
+cd podman
+podman kube play --configmap mirror-secrets.yaml sage-kafka.yaml
+podman kube play --replace --configmap mirror-secrets.yaml sage-kafka.yaml
 
 #Kubernetes (k3s on Sage Thor)
 docker build -t 10.31.81.1:5000/local/kafka-jmx:latest .
